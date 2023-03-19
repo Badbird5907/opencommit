@@ -52,6 +52,7 @@ const generateCommitMessageFromGitDiff = async (
     `Commit message:
 ${chalk.grey('——————————————————')}
 ${commitMessage}
+${aiNotes && aiNotes.length > 0 ? chalk.gray('Notes: ') + aiNotes : ''}
 ${chalk.grey('——————————————————')}`
   );
 
@@ -141,6 +142,12 @@ export async function commit(isStageAllFlag = false) {
     process.exit(1);
   }
 
+  stagedFilesSpinner.stop(
+    `${stagedFiles.length} staged files:\n${stagedFiles
+      .map((file) => `  ${file}`)
+      .join('\n')}`
+  );
+
   const isAiNotes = await confirm({
     message: 'Do you want to pass any notes to the AI?'
   })
@@ -148,17 +155,8 @@ export async function commit(isStageAllFlag = false) {
   if (isAiNotes) {
     aiNotes = await text({
       message: 'Please enter any text you want to pass:',
-      validate(value) {
-        if (value.length === 0) return `Value is required!`;
-      },
     }) as string
   }
-
-  stagedFilesSpinner.stop(
-    `${stagedFiles.length} staged files:\n${stagedFiles
-      .map((file) => `  ${file}`)
-      .join('\n')}`
-  );
 
   const [, generateCommitError] = await trytm(
     generateCommitMessageFromGitDiff(await getDiff({ files: stagedFiles }), aiNotes || "")
