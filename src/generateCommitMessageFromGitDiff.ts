@@ -10,22 +10,26 @@ import { i18n, I18nLocals } from './i18n';
 const config = getConfig();
 const translation = i18n[config?.language as I18nLocals || 'en']
 
-const INIT_MESSAGES_PROMPT: Array<ChatCompletionRequestMessage> = [
-  {
-    role: ChatCompletionRequestMessageRoleEnum.System,
-    content: `You are to act as the author of a commit message in git. Your mission is to create clean and comprehensive commit messages in the conventional commit convention. I'll send you an output of 'git diff --staged' command, and you convert it into a commit message. ${
-      config?.emoji
-        ? 'Use Gitmoji convention to preface the commit'
-        : 'Do not preface the commit with anything'
-    }, use the present tense. ${
-      config?.description
-        ? 'Add a short description of what commit is about after the commit message. Don\'t start it with "This commit", just describe the changes.'
-        : 'Don\'t add any descriptions to the commit, only commit message.'
-    } Use ${translation.localLanguage} to answer.}`
-  },
-  {
-    role: ChatCompletionRequestMessageRoleEnum.User,
-    content: `diff --git a/src/server.ts b/src/server.ts
+const generateCommitMessageChatCompletionPrompt = (
+  diff: string,
+  aiNotes: string = '',
+): Array<ChatCompletionRequestMessage> => {
+  const chatContextAsCompletionRequest = [
+    {
+      role: ChatCompletionRequestMessageRoleEnum.System,
+      content: `You are to act as the author of a commit message in git. Your mission is to create clean and comprehensive commit messages in the conventional commit convention. I'll send you an output of 'git diff --staged' command, and you convert it into a commit message. ${
+          config?.emoji
+              ? 'Use Gitmoji convention to preface the commit'
+              : 'Do not preface the commit with anything'
+      }${aiNotes && aiNotes.length > 0 ? ` ${aiNotes}` : ''}, use the present tense. ${
+          config?.description
+              ? 'Add a short description of what commit is about after the commit message. Don\'t start it with "This commit", just describe the changes.'
+              : 'Don\'t add any descriptions to the commit, only commit message.'
+      } Use ${translation.localLanguage} to answer.}`
+    },
+    {
+      role: ChatCompletionRequestMessageRoleEnum.User,
+      content: `diff --git a/src/server.ts b/src/server.ts
   index ad4db42..f3b18a9 100644
   --- a/src/server.ts
   +++ b/src/server.ts
@@ -47,19 +51,14 @@ const INIT_MESSAGES_PROMPT: Array<ChatCompletionRequestMessage> = [
   +app.listen(process.env.PORT || PORT, () => {
   +  console.log(\`Server listening on port \${PORT}\`);
     });`
-  },
-  {
-    role: ChatCompletionRequestMessageRoleEnum.Assistant,
-    content: `${config?.emoji ? '🐛 ' : ''}${translation.commitFix}
+    },
+    {
+      role: ChatCompletionRequestMessageRoleEnum.Assistant,
+      content: `${config?.emoji ? '🐛 ' : ''}${translation.commitFix}
 ${config?.emoji ? '✨ ' : ''}${translation.commitFeat}
 ${config?.description ? translation.commitDescription : ''}`
-  }
-];
-
-const generateCommitMessageChatCompletionPrompt = (
-  diff: string
-): Array<ChatCompletionRequestMessage> => {
-  const chatContextAsCompletionRequest = [...INIT_MESSAGES_PROMPT];
+    }
+  ];
 
   chatContextAsCompletionRequest.push({
     role: ChatCompletionRequestMessageRoleEnum.User,
@@ -79,24 +78,29 @@ interface GenerateCommitMessageError {
   error: GenerateCommitMessageErrorEnum;
 }
 
-const INIT_MESSAGES_PROMPT_LENGTH = INIT_MESSAGES_PROMPT.map(
+const INIT_MESSAGES_PROMPT_LENGTH = generateCommitMessageChatCompletionPrompt('','').map( // empty
   (msg) => msg.content
 ).join('').length;
 
-const MAX_REQ_TOKENS = 3900 - INIT_MESSAGES_PROMPT_LENGTH;
+const OLD_MAX_REQ_TOKENS = 3900 - INIT_MESSAGES_PROMPT_LENGTH;
+
+function getMaxReqTokens(aiNotes: string = '') {
+  return OLD_MAX_REQ_TOKENS - aiNotes.length;
+}
 
 export const generateCommitMessageWithChatCompletion = async (
-  diff: string
+  diff: string,
+  aiNotes: string = ''
 ): Promise<string | GenerateCommitMessageError> => {
   try {
-    if (diff.length >= MAX_REQ_TOKENS) {
-      const commitMessagePromises = getCommitMsgsPromisesFromFileDiffs(diff);
+    if (diff.length >= getMaxReqTokens(aiNotes)) {
+      const commitMessagePromises = getCommitMsgsPromisesFromFileDiffs(diff, aiNotes);
 
       const commitMessages = await Promise.all(commitMessagePromises);
 
       return commitMessages.join('\n\n');
     } else {
-      const messages = generateCommitMessageChatCompletionPrompt(diff);
+      const messages = generateCommitMessageChatCompletionPrompt(diff, aiNotes);
 
       const commitMessage = await api.generateCommitMessage(messages);
 
@@ -110,14 +114,14 @@ export const generateCommitMessageWithChatCompletion = async (
   }
 };
 
-function getMessagesPromisesByLines(fileDiff: string, separator: string) {
+function getMessagesPromisesByLines(fileDiff: string, separator: string, aiNotes: string = "") {
   const lineSeparator = '\n@@';
   const [fileHeader, ...fileDiffByLines] = fileDiff.split(lineSeparator);
 
   // merge multiple line-diffs into 1 to save tokens
   const mergedLines = mergeStrings(
     fileDiffByLines.map((line) => lineSeparator + line),
-    MAX_REQ_TOKENS
+    getMaxReqTokens(aiNotes)
   );
 
   const lineDiffsWithHeader = mergedLines.map(
@@ -133,25 +137,26 @@ function getMessagesPromisesByLines(fileDiff: string, separator: string) {
   return commitMsgsFromFileLineDiffs;
 }
 
-function getCommitMsgsPromisesFromFileDiffs(diff: string) {
+function getCommitMsgsPromisesFromFileDiffs(diff: string, aiNotes: string = '') {
   const separator = 'diff --git ';
 
   const diffByFiles = diff.split(separator).slice(1);
 
   // merge multiple files-diffs into 1 prompt to save tokens
-  const mergedFilesDiffs = mergeStrings(diffByFiles, MAX_REQ_TOKENS);
+  const mergedFilesDiffs = mergeStrings(diffByFiles, getMaxReqTokens(aiNotes));
 
   const commitMessagePromises = [];
 
   for (const fileDiff of mergedFilesDiffs) {
-    if (fileDiff.length >= MAX_REQ_TOKENS) {
+    if (fileDiff.length >= getMaxReqTokens(aiNotes)) {
       // if file-diff is bigger than gpt context — split fileDiff into lineDiff
-      const messagesPromises = getMessagesPromisesByLines(fileDiff, separator);
+      const messagesPromises = getMessagesPromisesByLines(fileDiff, separator, aiNotes);
 
       commitMessagePromises.push(...messagesPromises);
     } else {
       const messages = generateCommitMessageChatCompletionPrompt(
-        separator + fileDiff
+        separator + fileDiff,
+          aiNotes
       );
 
       commitMessagePromises.push(api.generateCommitMessage(messages));

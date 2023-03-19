@@ -16,19 +16,20 @@ import {
   outro,
   isCancel,
   intro,
-  multiselect
+  multiselect, text
 } from '@clack/prompts';
 import chalk from 'chalk';
 import { trytm } from '../utils/trytm';
 
 const generateCommitMessageFromGitDiff = async (
-  diff: string
+  diff: string,
+  aiNotes: string = ''
 ): Promise<void> => {
   await assertGitRepo();
 
   const commitSpinner = spinner();
   commitSpinner.start('Generating the commit message');
-  const commitMessage = await generateCommitMessageWithChatCompletion(diff);
+  const commitMessage = await generateCommitMessageWithChatCompletion(diff, aiNotes || "");
 
   // TODO: show proper error messages
   if (typeof commitMessage !== 'string') {
@@ -140,6 +141,19 @@ export async function commit(isStageAllFlag = false) {
     process.exit(1);
   }
 
+  const isAiNotes = await confirm({
+    message: 'Do you want to pass any notes to the AI?'
+  })
+  let aiNotes = ''
+  if (isAiNotes) {
+    aiNotes = await text({
+      message: 'Please enter any text you want to pass:',
+      validate(value) {
+        if (value.length === 0) return `Value is required!`;
+      },
+    }) as string
+  }
+
   stagedFilesSpinner.stop(
     `${stagedFiles.length} staged files:\n${stagedFiles
       .map((file) => `  ${file}`)
@@ -147,7 +161,7 @@ export async function commit(isStageAllFlag = false) {
   );
 
   const [, generateCommitError] = await trytm(
-    generateCommitMessageFromGitDiff(await getDiff({ files: stagedFiles }))
+    generateCommitMessageFromGitDiff(await getDiff({ files: stagedFiles }), aiNotes || "")
   );
 
   if (generateCommitError) {
