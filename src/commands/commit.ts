@@ -49,10 +49,9 @@ const generateCommitMessageFromGitDiff = async (
   commitSpinner.stop('📝 Commit message generated');
 
   outro(
-    `Commit message:
+      `Commit message:
 ${chalk.grey('——————————————————')}
-${commitMessage}
-${aiNotes && aiNotes.length > 0 ? chalk.gray('Notes: ') + aiNotes : ''}
+${commitMessage}${aiNotes && aiNotes.length > 0 ? '\n' + chalk.gray(` - Notes: ${aiNotes}`) : ''}
 ${chalk.grey('——————————————————')}`
   );
 
